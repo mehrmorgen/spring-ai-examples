@@ -33,3 +33,4 @@ build/
 .vscode/
 /agentic-patterns/orchestrator-workers/agent-memory.db
 /agentic-patterns/orchestrator-workers/agent-memory-e2e.db
+/agent-memory.db

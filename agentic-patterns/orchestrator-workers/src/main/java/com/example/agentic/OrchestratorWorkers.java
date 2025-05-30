@@ -1,24 +1,27 @@
-/* 
-* Copyright 2024 - 2024 the original author or authors.
-* 
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-* 
-* https://www.apache.org/licenses/LICENSE-2.0
-* 
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
+/*
+ * Copyright 2024 - 2024 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.example.agentic;
 
-import java.util.List;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.util.Assert;
+
+import java.util.List;
+import java.util.Optional;
 
 /**
  * Pattern: <b>Orchestrator-workers</b>
@@ -58,145 +61,165 @@ import org.springframework.util.Assert;
  * particularly effective for tasks that require adaptive problem-solving and
  * coordination between multiple
  * specialized components.
- * 
+ *
  * @author Christian Tzolov
  * @see <a href=
- *      "https://www.anthropic.com/research/building-effective-agents">Building
- *      effective agents</a>
+ * "https://www.anthropic.com/research/building-effective-agents">Building
+ * effective agents</a>
  */
 public class OrchestratorWorkers {
 
-	private final ChatClient chatClient;
-	private final String orchestratorPrompt;
-	private final String workerPrompt;
+    public static final String DEFAULT_ORCHESTRATOR_PROMPT = """
+            Analyze this task and break it down into 2-3 distinct approaches:
+            
+            Task: {task}
+            
+            Return your response in this JSON format:
+            \\{
+            	"analysis": "Explain your understanding of the task and which variations would be valuable.
+            				 Focus on how each approach serves different aspects of the task.",
+            	"tasks": [
+            		\\{
+            		"type": "formal",
+            		"description": "Write a precise, technical version that emphasizes specifications"
+            		\\},
+            		\\{
+            		"type": "conversational",
+            		"description": "Write an engaging, friendly version that connects with readers"
+            		\\}
+            	]
+            \\}
+            """;
+    public static final String DEFAULT_WORKER_PROMPT = """
+            Generate content based on:
+            Task: {original_task}
+            Style: {task_type}
+            Guidelines: {task_description}
+            """;
+    private static final Logger LOGGER = LoggerFactory.getLogger(OrchestratorWorkers.class);
+    private final ChatClient chatClient;
+    private final String orchestratorPrompt;
+    private final String workerPrompt;
 
-	public static final String DEFAULT_ORCHESTRATOR_PROMPT = """
-			Analyze this task and break it down into 2-3 distinct approaches:
+    /**
+     * Creates a new OrchestratorWorkers with default prompts.
+     *
+     * @param chatClient The ChatClient to use for LLM interactions
+     */
+    public OrchestratorWorkers(ChatClient chatClient) {
+        this(chatClient, DEFAULT_ORCHESTRATOR_PROMPT, DEFAULT_WORKER_PROMPT);
+    }
 
-			Task: {task}
+    /**
+     * Creates a new OrchestratorWorkers with custom prompts.
+     *
+     * @param chatClient         The ChatClient to use for LLM interactions
+     * @param orchestratorPrompt Custom prompt for the orchestrator LLM
+     * @param workerPrompt       Custom prompt for the worker LLMs
+     */
+    public OrchestratorWorkers(ChatClient chatClient, String orchestratorPrompt, String workerPrompt) {
+        Assert.notNull(chatClient, "ChatClient must not be null");
+        Assert.hasText(orchestratorPrompt, "Orchestrator prompt must not be empty");
+        Assert.hasText(workerPrompt, "Worker prompt must not be empty");
 
-			Return your response in this JSON format:
-			\\{
-			"analysis": "Explain your understanding of the task and which variations would be valuable.
-			             Focus on how each approach serves different aspects of the task.",
-			"tasks": [
-				\\{
-				"type": "formal",
-				"description": "Write a precise, technical version that emphasizes specifications"
-				\\},
-				\\{
-				"type": "conversational",
-				"description": "Write an engaging, friendly version that connects with readers"
-				\\}
-			]
-			\\}
-			""";
+        this.chatClient = chatClient;
+        this.orchestratorPrompt = orchestratorPrompt;
+        this.workerPrompt = workerPrompt;
+    }
 
-	public static final String DEFAULT_WORKER_PROMPT = """
-			Generate content based on:
-			Task: {original_task}
-			Style: {task_type}
-			Guidelines: {task_description}
-			""";
+    private OrchestratorResponse createFallbackResponse(String rawContent) {
+        // Extract any useful information from the raw content if possible
+        var analysis = "Analysis based on raw LLM output: " + rawContent;
 
-	/**
-	 * Represents a subtask identified by the orchestrator that needs to be executed
-	 * by a worker.
-	 * 
-	 * @param type        The type or category of the task (e.g., "formal",
-	 *                    "conversational")
-	 * @param description Detailed description of what the worker should accomplish
-	 */
-	public static record Task(String type, String description) {
-	}
+        // Create default tasks
+        var tasks = List.of(
+                new Task("formal", "Write a precise, technical version that emphasizes specifications"),
+                new Task("conversational", "Write an engaging, friendly version that connects with readers")
+        );
 
-	/**
-	 * Response from the orchestrator containing task analysis and breakdown into
-	 * subtasks.
-	 * 
-	 * @param analysis Detailed explanation of the task and how different approaches
-	 *                 serve its aspects
-	 * @param tasks    List of subtasks identified by the orchestrator to be
-	 *                 executed by workers
-	 */
-	public static record OrchestratorResponse(String analysis, List<Task> tasks) {
-	}
+        return new OrchestratorResponse(analysis, tasks);
+    }
 
-	/**
-	 * Final response containing the orchestrator's analysis and combined worker
-	 * outputs.
-	 * 
-	 * @param analysis        The orchestrator's understanding and breakdown of the
-	 *                        original task
-	 * @param workerResponses List of responses from workers, each handling a
-	 *                        specific subtask
-	 */
-	public static record FinalResponse(String analysis, List<String> workerResponses) {
-	}
+    /**
+     * Processes a task using the orchestrator-workers pattern.
+     * First, the orchestrator analyzes the task and breaks it down into subtasks.
+     * Then, workers execute each subtask in parallel.
+     * Finally, the results are combined into a single response.
+     *
+     * @param taskDescription Description of the task to be processed
+     * @return FinalResponse containing the orchestrator's analysis and combined
+     *         worker outputs
+     * @throws IllegalArgumentException if taskDescription is null or empty
+     */
+    @SuppressWarnings("null")
+    public FinalResponse process(String taskDescription) {
+        Assert.hasText(taskDescription, "Task description must not be empty");
 
-	/**
-	 * Creates a new OrchestratorWorkers with default prompts.
-	 * 
-	 * @param chatClient The ChatClient to use for LLM interactions
-	 */
-	public OrchestratorWorkers(ChatClient chatClient) {
-		this(chatClient, DEFAULT_ORCHESTRATOR_PROMPT, DEFAULT_WORKER_PROMPT);
-	}
+        // Step 1: Get orchestrator response
+        var orchestratorResponse = tryGetOrchestratorResponse(taskDescription)
+                .orElseGet(() -> {
+                    // Get the raw content instead for fallback
+                    var rawContent = chatClient.prompt()
+                            .user(u -> u.text(orchestratorPrompt)
+                                    .param("task", taskDescription))
+                            .call()
+                            .content();
 
-	/**
-	 * Creates a new OrchestratorWorkers with custom prompts.
-	 * 
-	 * @param chatClient         The ChatClient to use for LLM interactions
-	 * @param orchestratorPrompt Custom prompt for the orchestrator LLM
-	 * @param workerPrompt       Custom prompt for the worker LLMs
-	 */
-	public OrchestratorWorkers(ChatClient chatClient, String orchestratorPrompt, String workerPrompt) {
-		Assert.notNull(chatClient, "ChatClient must not be null");
-		Assert.hasText(orchestratorPrompt, "Orchestrator prompt must not be empty");
-		Assert.hasText(workerPrompt, "Worker prompt must not be empty");
+                    LOGGER.info("Raw content from LLM: {}", rawContent);
 
-		this.chatClient = chatClient;
-		this.orchestratorPrompt = orchestratorPrompt;
-		this.workerPrompt = workerPrompt;
-	}
+                    // Create a fallback response with default tasks
+                    return createFallbackResponse(rawContent);
+                });
+        
+        LOGGER.info("""
+                        === ORCHESTRATOR OUTPUT ===
+                        
+                        ANALYSIS: {}
+                        
+                        TASKS: {}
+                        """,
+                orchestratorResponse.analysis(), orchestratorResponse.tasks());
 
-	/**
-	 * Processes a task using the orchestrator-workers pattern.
-	 * First, the orchestrator analyzes the task and breaks it down into subtasks.
-	 * Then, workers execute each subtask in parallel.
-	 * Finally, the results are combined into a single response.
-	 * 
-	 * @param taskDescription Description of the task to be processed
-	 * @return WorkerResponse containing the orchestrator's analysis and combined
-	 *         worker outputs
-	 * @throws IllegalArgumentException if taskDescription is null or empty
-	 */
-	@SuppressWarnings("null")
-	public FinalResponse process(String taskDescription) {
-		Assert.hasText(taskDescription, "Task description must not be empty");
+        // Step 2: Process each task
+        var workerResponses = orchestratorResponse.tasks().stream().map(task -> chatClient.prompt()
+                .user(u -> u.text(workerPrompt)
+                        .param("original_task", taskDescription)
+                        .param("task_type", task.type())
+                        .param("task_description", task.description()))
+                .call()
+                .content()).toList();
 
-		// Step 1: Get orchestrator response
-		OrchestratorResponse orchestratorResponse = this.chatClient.prompt()
-				.user(u -> u.text(this.orchestratorPrompt)
-						.param("task", taskDescription))
-				.call()
-				.entity(OrchestratorResponse.class);
+        LOGGER.info("\n=== WORKER OUTPUT ===\n{}", workerResponses);
 
-		System.out.println(String.format("\n=== ORCHESTRATOR OUTPUT ===\nANALYSIS: %s\n\nTASKS: %s\n",
-				orchestratorResponse.analysis(), orchestratorResponse.tasks()));
+        return new FinalResponse(orchestratorResponse.analysis(), workerResponses);
+    }
 
-		// Step 2: Process each task
-		List<String> workerResponses = orchestratorResponse.tasks().stream().map(task -> this.chatClient.prompt()
-				.user(u -> u.text(this.workerPrompt)
-						.param("original_task", taskDescription)
-						.param("task_type", task.type())
-						.param("task_description", task.description()))
-				.call()
-				.content()).toList();
+    private Optional<OrchestratorResponse> tryGetOrchestratorResponse(String taskDescription) {
 
-		System.out.println("\n=== WORKER OUTPUT ===\n" + workerResponses);
+        return Optional.of(chatClient.prompt()
+                .user(u -> u.text(this.orchestratorPrompt)
+                        .param("task", taskDescription))
+                .call()
+                .entity(OrchestratorResponse.class));
 
-		return new FinalResponse(orchestratorResponse.analysis(), workerResponses);
-	}
+    }
+
+    private record Task(String type, String description) {
+    }
+
+    private record OrchestratorResponse(String analysis, List<Task> tasks) {
+    }
+
+    /**
+     * Final response containing the orchestrator's analysis and combined worker
+     * outputs.
+     *
+     * @param analysis        The orchestrator's understanding and breakdown of the
+     *                        original task
+     * @param workerResponses List of responses from workers, each handling a
+     *                        specific subtask
+     */
+    public record FinalResponse(String analysis, List<String> workerResponses) {
+    }
 
 }
