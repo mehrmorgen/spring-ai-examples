@@ -1,85 +1,310 @@
-# Orchestrator-Workers Workflow Pattern
 
-This project demonstrates the Orchestrator-Workers workflow pattern for building effective LLM-based systems, as described in [Anthropic's research on building effective agents](https://www.anthropic.com/research/building-effective-agents).
+# Rich Agent Orchestration with Memory and Tool Use
 
-![Orchestration Workflow](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fwww-cdn.anthropic.com%2Fimages%2F4zrzovbb%2Fwebsite%2F8985fc683fae4780fb34eab1365ab78c7e51bc8e-2401x1000.png&w=3840&q=75)
+Based on the Spring AI Tutorial, original README
 
-## Overview
+## Code Style and Best Practices Guide
 
-The Orchestrator-Workers pattern is a flexible approach for handling complex tasks that require dynamic task decomposition and specialized processing. It consists of three main components:
+This document provides guidance for generating code and content that adheres to the established patterns and practices in the Orchestrator-Workers project. Following these guidelines will ensure consistency and maintainability.
 
-- **Orchestrator**: A central LLM that analyzes tasks and determines required subtasks
-- **Workers**: Specialized LLMs that execute specific subtasks
-- **Synthesizer**: Component that combines worker outputs into a final result
+## 1. Java Code Style
 
-## When to Use
+### Class Structure
+- **Use Records for Data Transfer Objects**: Use Java records for immutable data transfer objects (DTOs) like `Task`, `OrchestratorResponse`, and `FinalResponse`.
+  - **Pros**: Concise syntax, built-in equals/hashCode/toString, immutability
+  - **Cons**: Limited to data carrier use cases, cannot extend other classes
+  - **Example**:
+  ```java
+  public static record OrchestratorResponse(String analysis, List<Task> tasks) {}
+  ```
 
-This pattern is particularly effective for:
+- **Interface-based Design**: Define interfaces before implementations to enable multiple implementations and facilitate testing.
+  - **Pros**: Promotes loose coupling, enables dependency injection, simplifies testing
+  - **Cons**: Can add complexity for simple use cases
+  - **Example**: `AgentMemory` interface with `InMemoryAgentMemory` and `SqliteAgentMemory` implementations
 
-- Complex tasks where subtasks can't be predicted upfront
-- Tasks requiring different approaches or perspectives
-- Situations needing adaptive problem-solving
-- Tasks benefiting from specialized processing
+### Documentation
+- **Comprehensive JavaDoc**: Include detailed JavaDoc for all public classes, methods, and interfaces.
+  - **Pros**: Self-documenting code, IDE assistance, better developer experience
+  - **Cons**: Requires maintenance when code changes
+  - **Example**:
+  ```java
+  /**
+   * Processes a task using the orchestrator-workers pattern.
+   * First, the orchestrator analyzes the task and breaks it down into subtasks.
+   * Then, workers execute each subtask in parallel.
+   * Finally, the results are combined into a single response.
+   * 
+   * @param taskDescription Description of the task to be processed
+   * @return WorkerResponse containing the orchestrator's analysis and combined worker outputs
+   * @throws IllegalArgumentException if taskDescription is null or empty
+   */
+  ```
 
+### Error Handling
+- **Precondition Validation**: Use Spring's `Assert` utility for validating method parameters.
+  - **Pros**: Clear error messages, fail-fast approach, consistent validation
+  - **Cons**: Adds verbosity to method beginnings
+  - **Example**:
+  ```java
+  Assert.notNull(chatClient, "ChatClient must not be null");
+  Assert.hasText(taskDescription, "Task description must not be empty");
+  ```
 
-## Implementation
+- **Exception Handling**: Use try-catch blocks with specific exception types and provide meaningful error messages.
+  - **Example**:
+  ```java
+  try {
+      return jdbcTemplate.queryForObject("SELECT analysis FROM analyses WHERE task_id = ?", String.class, taskId);
+  } catch (EmptyResultDataAccessException e) {
+      return null;
+  }
+  ```
 
-The implementation uses Spring AI's ChatClient for LLM interactions and consists of:
+## 2. Project Structure
 
-```java
-public class OrchestratorWorkers {
-    public WorkerResponse process(String taskDescription) {
-        // 1. Orchestrator analyzes task and determines subtasks
-        OrchestratorResponse orchestratorResponse = // ...
+### Package Organization
+- **Feature-based Packaging**: Organize code by feature rather than by layer.
+  - **Pros**: Related code stays together, easier to understand feature boundaries
+  - **Cons**: May lead to some duplication across features
+  - **Example**: Memory-related classes are in the `com.example.agentic.memory` package
 
-        // 2. Workers process subtasks in parallel
-        List<String> workerResponses = // ...
-
-        // 3. Results are combined into final response
-        return new WorkerResponse(/*...*/);
-    }
-}
+### Project Directory Structure
+```
+orchestrator-workers/
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   │   └── com/
+│   │   │       └── example/
+│   │   │           └── agentic/
+│   │   │               ├── memory/                 # Memory-related components
+│   │   │               │   ├── AgentMemory.java    # Memory interface
+│   │   │               │   ├── InMemoryAgentMemory.java  # Test implementation
+│   │   │               │   ├── MemoryAgent.java    # Memory-enabled agent interface
+│   │   │               │   └── SqliteAgentMemory.java    # Production implementation
+│   │   │               ├── Application.java        # Main application entry point
+│   │   │               ├── MemoryOrchestratorWorkers.java  # Memory-enabled implementation
+│   │   │               └── OrchestratorWorkers.java  # Core pattern implementation
+│   │   └── resources/
+│   │       └── application.properties  # Application configuration
+│   └── test/
+│       ├── java/
+│       │   └── com/
+│       │       └── example/
+│       │           └── agentic/
+│       │               ├── config/                 # Test configuration
+│       │               │   └── TestConfig.java     # Test-specific beans
+│       │               ├── memory/                 # Memory test components
+│       │               │   └── E2EAgentMemory.java # End-to-end test memory
+│       │               └── OrchestratorWorkersTests.java  # Core tests
+│       └── resources/
+│           └── application-e2e.properties  # E2E test configuration
+└── pom.xml                                 # Project dependencies
 ```
 
-### Usage Example
+### Configuration
+- **Profile-based Configuration**: Use Spring profiles to configure different environments.
+  - **Pros**: Environment-specific behavior without code changes
+  - **Cons**: Can make application startup logic more complex
+  - **Example**:
+  ```java
+  @Component
+  @Profile("!test")
+  public class SqliteAgentMemory implements AgentMemory {
+      // Implementation
+  }
+  ```
 
-```java
-ChatClient chatClient = // ... initialize chat client
-OrchestratorWorkers agent = new OrchestratorWorkers(chatClient);
+## 3. Prompt Engineering
 
-// Process a task
-WorkerResponse response = agent.process(
-    "Generate both technical and user-friendly documentation for a REST API endpoint"
-);
+### Prompt Templates
+- **Use Multi-line String Literals**: Define prompt templates using Java text blocks (triple quotes).
+  - **Pros**: Preserves formatting, improves readability
+  - **Cons**: Only available in Java 15+
+  - **Example**:
+  ```java
+  public static final String DEFAULT_ORCHESTRATOR_PROMPT = """
+          Analyze this task and break it down into 2-3 distinct approaches:
+          
+          Task: {task}
+          
+          Return your response in this JSON format:
+          \\{
+          "analysis": "Explain your understanding of the task and which variations would be valuable.
+                       Focus on how each approach serves different aspects of the task.",
+          "tasks": [
+              \\{
+              "type": "formal",
+              "description": "Write a precise, technical version that emphasizes specifications"
+              \\},
+              \\{
+              "type": "conversational",
+              "description": "Write an engaging, friendly version that connects with readers"
+              \\}
+          ]
+          \\}
+          """;
+  ```
 
-// Access results
-System.out.println("Analysis: " + response.analysis());
-System.out.println("Worker Outputs: " + response.workerResponses());
-```
+- **Parameterized Prompts**: Use placeholders in prompts that can be replaced at runtime.
+  - **Pros**: Reusable templates, consistent prompt structure
+  - **Cons**: Need to ensure all parameters are provided
+  - **Example**: `{task}`, `{original_task}`, `{task_type}`, `{task_description}`
 
-## Customization
+### Response Parsing
+- **Structured Responses**: Request responses in structured formats (like JSON) for easier parsing.
+  - **Pros**: Reliable extraction of information, consistent structure
+  - **Cons**: More complex prompts, may limit model creativity
+  - **Example**: Using Spring AI's entity mapping to parse JSON responses into Java objects:
+  ```java
+  OrchestratorResponse orchestratorResponse = this.chatClient.prompt()
+          .user(u -> u.text(this.orchestratorPrompt)
+                  .param("task", taskDescription))
+          .call()
+          .entity(OrchestratorResponse.class);
+  ```
 
-The pattern can be customized through:
+## 4. Memory Management
 
-1. **Custom Prompts**: Provide specialized prompts for orchestrator and workers
-```java
-agent = new OrchestratorWorkers(
-    chatClient,
-    customOrchestratorPrompt,
-    customWorkerPrompt
-);
-```
+### Memory Interfaces
+- **Consistent Memory API**: Use a consistent interface for memory operations.
+  - **Pros**: Swappable implementations, consistent usage patterns
+  - **Cons**: May not capture all specialized needs
+  - **Example**: `AgentMemory` interface with methods like `saveAnalysis`, `getWorkerResponses`
 
-2. **Default Templates**: Modify the default prompts for common use cases
-   - `DEFAULT_ORCHESTRATOR_PROMPT`: Template for task analysis
-   - `DEFAULT_WORKER_PROMPT`: Template for worker processing
+### Storage Options
+- **Multiple Storage Backends**: Support different storage options through interface implementations.
+  - **Pros**: Flexibility for different use cases, environment-specific storage
+  - **Cons**: Need to test all implementations
+  - **Example**: `InMemoryAgentMemory` for testing, `SqliteAgentMemory` for production
 
-## Dependencies
+## 5. Testing Practices
 
-- Spring AI
-- Spring Boot
-- Java 17 or later
+### Test-Driven Development (TDD)
+- **Write Tests First**: Follow the TDD approach by writing tests before implementing functionality.
+  - **Pros**: Ensures testable code, clear requirements, better design
+  - **Cons**: Initial learning curve, may slow down initial development
+  - **Example**:
+  ```java
+  @Test
+  void shouldBreakTaskIntoSubtasks() {
+      // Given
+      String taskDescription = "Generate documentation for API";
+      
+      // When
+      FinalResponse response = orchestratorWorkers.process(taskDescription);
+      
+      // Then
+      assertThat(response.analysis()).isNotEmpty();
+      assertThat(response.workerResponses()).hasSizeGreaterThan(1);
+  }
+  ```
 
-## References
+- **Red-Green-Refactor Cycle**: Follow the TDD cycle:
+  1. Write a failing test (Red)
+  2. Implement just enough code to make the test pass (Green)
+  3. Refactor the code while keeping tests passing
+  - **Rationale**: Ensures code is always testable and meets requirements
 
-- [Building Effective Agents (Anthropic Research)](https://www.anthropic.com/research/building-effective-agents)
+### Test Profiles
+- **Use Spring Profiles for Testing**: Configure test-specific beans using Spring profiles.
+  - **Pros**: Isolates test environment, prevents production code from running in tests
+  - **Cons**: Need to maintain separate configurations
+  - **Example**: `@Profile("test")` for test-specific implementations
+
+### Test Fixtures
+- **Reusable Test Data**: Create test fixtures for common test data and scenarios.
+  - **Pros**: Consistent test data, DRY principle, easier test maintenance
+  - **Cons**: Can become complex if overused
+  - **Example**:
+  ```java
+  public class TestFixtures {
+      public static final String SAMPLE_TASK = "Generate documentation for REST API";
+      
+      public static OrchestratorResponse createSampleOrchestratorResponse() {
+          return new OrchestratorResponse(
+              "Sample analysis",
+              List.of(
+                  new Task("formal", "Write technical documentation"),
+                  new Task("conversational", "Write user-friendly guide")
+              )
+          );
+      }
+      
+      public static ChatClient createMockChatClient() {
+          // Create and configure a mock ChatClient for testing
+      }
+  }
+  ```
+
+- **Test Data Builders**: Use the builder pattern for complex test data.
+  - **Pros**: Flexible test data creation, readable test setup
+  - **Cons**: Additional code to maintain
+  - **Example**:
+  ```java
+  public class TaskBuilder {
+      private String type = "default";
+      private String description = "Default description";
+      
+      public TaskBuilder withType(String type) {
+          this.type = type;
+          return this;
+      }
+      
+      public TaskBuilder withDescription(String description) {
+          this.description = description;
+          return this;
+      }
+      
+      public Task build() {
+          return new Task(type, description);
+      }
+      
+      public static TaskBuilder aTask() {
+          return new TaskBuilder();
+      }
+  }
+  
+  // Usage in tests
+  Task task = TaskBuilder.aTask()
+      .withType("formal")
+      .withDescription("Write API docs")
+      .build();
+  ```
+
+### End-to-End Testing
+- **E2E Test Support**: Include support for end-to-end testing with specialized configurations.
+  - **Pros**: Validates complete workflows, catches integration issues
+  - **Cons**: Slower tests, more complex setup
+  - **Example**: `E2EAgentMemory` class for end-to-end testing
+
+## 6. Rationale and Trade-offs
+
+### Why These Patterns?
+
+1. **Interface-First Design**
+   - **Rationale**: Enables multiple implementations and facilitates testing
+   - **Trade-offs**: Adds complexity but improves flexibility and testability
+
+2. **Immutable Data Objects**
+   - **Rationale**: Prevents unexpected state changes, thread-safe
+   - **Trade-offs**: Requires creating new objects for changes, but improves reliability
+
+3. **Structured Prompts and Responses**
+   - **Rationale**: Ensures consistent interaction with LLMs
+   - **Trade-offs**: More complex prompts but more reliable parsing
+
+4. **Memory Abstraction**
+   - **Rationale**: Allows different storage strategies without changing agent logic
+   - **Trade-offs**: Additional abstraction layer but enables flexibility in deployment
+
+5. **Test-Driven Development**
+   - **Rationale**: Ensures code quality and testability from the start
+   - **Trade-offs**: Initial development may be slower, but maintenance is easier
+
+6. **Test Fixtures**
+   - **Rationale**: Provides consistent, reusable test data
+   - **Trade-offs**: Requires maintenance but improves test readability and reliability
+
+By following these guidelines, you'll ensure that generated code and content aligns with the established patterns and practices in the Orchestrator-Workers project, maintaining consistency and quality across the codebase.
